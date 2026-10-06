@@ -20,7 +20,8 @@ SECRET_KEY = "#fdd<>?<{%fS3242RGS"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
 
-ECO_POINTS_PER_KM = 5
+ECO_POINTS_PER_KM = 2
+FARE_PER_KM = 2.0
 
 engine = create_engine("sqlite:///database.db")
 
@@ -62,6 +63,7 @@ class Rides(Base):
     pickup_lng = Column(Float, nullable=False)
     drop_lat = Column(Float, nullable=False)
     drop_lng = Column(Float, nullable=False)
+    fair = Column(Float, nullable=False)
     pickup_address = Column(String)
     drop_address = Column(String)
     distance_km = Column(Float, nullable=False)
@@ -205,6 +207,7 @@ class RideOut(BaseModel):
     pickup_address: str | None
     drop_address: str | None
     distance_km: float
+    fair: float
     status: str
     eco_points_earned: int
     created_at: datetime
@@ -332,6 +335,7 @@ def book_ride(data: RideIn, current_user: Users = Depends(get_user), db: Session
         pickup_address=data.pickup_address,
         drop_address=data.drop_address,
         distance_km=round(distance, 3),
+        fair=round(distance * FARE_PER_KM + distance * ECO_POINTS_PER_KM, 2),
         status="booked",
     )
     db.add(ride)
