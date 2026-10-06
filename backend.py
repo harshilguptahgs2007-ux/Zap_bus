@@ -20,9 +20,6 @@ SECRET_KEY = "#fdd<>?<{%fS3242RGS"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
 
-_origins_env = os.getenv("ALLOWED_ORIGINS")
-ALLOWED_ORIGINS = _origins_env.split(",") if _origins_env else ["http://localhost:3000"]
-
 ECO_POINTS_PER_KM = 5
 
 engine = create_engine("sqlite:///database.db")
@@ -81,7 +78,7 @@ SessionLocal = sessionmaker(engine)
 app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
+    allow_origins=["*"],
     allow_credentials=False,
     allow_headers=["*"],
     allow_methods=["*"],
