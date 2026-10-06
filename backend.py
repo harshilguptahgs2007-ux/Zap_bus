@@ -1,7 +1,6 @@
 import math
 import os
 from datetime import datetime, timedelta, timezone
-from typing import Literal
 
 import bcrypt
 from fastapi import FastAPI, Depends, HTTPException, Query, status
@@ -12,7 +11,7 @@ from jose.exceptions import JWTError
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 from sqlalchemy import (
     Column, DateTime, Float, ForeignKey, Integer, String,
-    create_engine, delete, event, select,
+    create_engine, delete, event, func, select,
 )
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Session, relationship, sessionmaker
@@ -26,15 +25,7 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 60
 _origins_env = os.getenv("ALLOWED_ORIGINS")
 ALLOWED_ORIGINS = _origins_env.split(",") if _origins_env else ["http://localhost:3000"]
 
-ECO_RATE_PER_KM = {
-    "cycle": 10,
-    "ev_bike": 8,
-    "ev_car": 6,
-    "shared": 5,
-    "bike": 3,
-    "car": 1,
-}
-VehicleType = Literal["cycle", "ev_bike", "ev_car", "shared", "bike", "car"]
+ECO_POINTS_PER_KM = 5
 
 engine = create_engine("sqlite:///database.db")
 
@@ -78,7 +69,6 @@ class Rides(Base):
     drop_lng = Column(Float, nullable=False)
     pickup_address = Column(String)
     drop_address = Column(String)
-    vehicle_type = Column(String, nullable=False)
     distance_km = Column(Float, nullable=False)
     status = Column(String, nullable=False, default="booked")
     eco_points_earned = Column(Integer, nullable=False, default=0)
@@ -130,10 +120,10 @@ def haversine_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
     return 2 * r * math.asin(math.sqrt(a))
 
 
-def calc_eco_points(vehicle_type: str, distance_km: float) -> int:
+def calc_eco_points(distance_km: float) -> int:
     if distance_km <= 0:
         return 0
-    return max(1, round(distance_km * ECO_RATE_PER_KM[vehicle_type]))
+    return max(1, round(distance_km * ECO_POINTS_PER_KM))
 
 
 def get_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> Users:
@@ -208,7 +198,6 @@ class RideIn(BaseModel):
     drop_lng: float = Lng
     pickup_address: str | None = Field(None, max_length=300)
     drop_address: str | None = Field(None, max_length=300)
-    vehicle_type: VehicleType
 
 
 class RideOut(BaseModel):
@@ -220,7 +209,6 @@ class RideOut(BaseModel):
     drop_lng: float
     pickup_address: str | None
     drop_address: str | None
-    vehicle_type: str
     distance_km: float
     status: str
     eco_points_earned: int
@@ -230,6 +218,7 @@ class RideOut(BaseModel):
 
 class RideHistory(BaseModel):
     eco_points_total: int
+    total_distance_km: float
     rides: list[RideOut]
 
 
@@ -310,17 +299,30 @@ def delete_me(current_user: Users = Depends(get_user), db: Session = Depends(get
 
 @app.get("/me/rides", response_model=RideHistory)
 def ride_history(
-    limit: int = Query(10, ge=1, le=50),
+    limit: int | None = Query(None, ge=1, le=500),
+    offset: int = Query(0, ge=0),
     current_user: Users = Depends(get_user),
     db: Session = Depends(get_db),
 ):
-    rides = db.scalars(
+    query = (
         select(Rides)
         .where(Rides.user_id == current_user.id)
         .order_by(Rides.created_at.desc(), Rides.id.desc())
-        .limit(limit)
-    ).all()
-    return {"eco_points_total": current_user.eco_points_total, "rides": rides}
+        .offset(offset)
+    )
+    if limit is not None:
+        query = query.limit(limit)
+    rides = db.scalars(query).all()
+    total_distance = db.scalar(
+        select(func.coalesce(func.sum(Rides.distance_km), 0.0)).where(
+            Rides.user_id == current_user.id, Rides.status == "completed"
+        )
+    )
+    return {
+        "eco_points_total": current_user.eco_points_total,
+        "total_distance_km": round(total_distance, 3),
+        "rides": rides,
+    }
 
 
 @app.post("/rides", response_model=RideOut, status_code=201)
@@ -334,7 +336,6 @@ def book_ride(data: RideIn, current_user: Users = Depends(get_user), db: Session
         drop_lng=data.drop_lng,
         pickup_address=data.pickup_address,
         drop_address=data.drop_address,
-        vehicle_type=data.vehicle_type,
         distance_km=round(distance, 3),
         status="booked",
     )
@@ -362,7 +363,7 @@ def complete_ride(ride_id: int, current_user: Users = Depends(get_user), db: Ses
     if ride.status != "booked":
         raise HTTPException(status_code=409, detail=f"Ride is already {ride.status}")
 
-    points = calc_eco_points(ride.vehicle_type, ride.distance_km)
+    points = calc_eco_points(ride.distance_km)
     ride.status = "completed"
     ride.completed_at = utcnow()
     ride.eco_points_earned = points
